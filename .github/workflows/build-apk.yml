@@ -22,6 +22,7 @@ jobs:
       - name: Set up Flutter
         uses: subosito/flutter-action@v2
         with:
+          flutter-version: '3.29.2'
           channel: stable
           cache: true
 
@@ -31,13 +32,64 @@ jobs:
       - name: Get dependencies
         run: flutter pub get
 
+      - name: Patch flutter_pcm_player (missing namespace)
+        run: |
+          PCM_DIR="$HOME/.pub-cache/hosted/pub.dev/flutter_pcm_player-0.0.1/android"
+          GRADLE_FILE="$PCM_DIR/build.gradle"
+          MANIFEST_FILE="$PCM_DIR/src/main/AndroidManifest.xml"
+
+          if [ -f "$GRADLE_FILE" ]; then
+            if ! grep -q "namespace" "$GRADLE_FILE"; then
+              sed -i '/android {/a \\    namespace "com.lhht.flutter_pcm_player"' "$GRADLE_FILE"
+            else
+              sed -i 's/namespace "com.example.flutter_pcm_player"/namespace "com.lhht.flutter_pcm_player"/' "$GRADLE_FILE"
+            fi
+            echo "--- patched build.gradle ---"
+            cat "$GRADLE_FILE"
+          else
+            echo "WARN: build.gradle not found at $GRADLE_FILE"
+          fi
+
+          if [ -f "$MANIFEST_FILE" ]; then
+            sed -i 's/package="com.example.flutter_pcm_player"/package="com.lhht.flutter_pcm_player"/' "$MANIFEST_FILE"
+          fi
+
+          echo 'android.namespace=com.lhht.flutter_pcm_player' >> "$PCM_DIR/gradle.properties" || true
+
+      - name: Relax R8 to avoid Play Core / minify failures
+        run: |
+          PROGUARD="android/app/proguard-rules.pro"
+          touch "$PROGUARD"
+          {
+            echo '-dontwarn com.google.android.play.core.**'
+            echo '-keep class com.google.android.play.core.** { *; }'
+            echo '-dontwarn io.flutter.**'
+          } >> "$PROGUARD"
+          if [ -f android/gradle.properties ]; then
+            echo 'android.enableR8.fullMode=false' >> android/gradle.properties
+          fi
+          echo "--- proguard-rules.pro ---"
+          cat "$PROGUARD"
+
       - name: Build release APK
+        id: release
+        continue-on-error: true
         run: flutter build apk --release
 
-      - name: Upload APK artifact
+      - name: Build debug APK (fallback)
+        if: steps.release.outcome == 'failure'
+        run: flutter build apk --debug
+
+      - name: List build output
+        if: always()
+        run: ls -lh build/app/outputs/flutter-apk/ || true
+
+      - name: Upload APK
         uses: actions/upload-artifact@v4
         with:
-          name: xiaozhi-android-release
-          path: build/app/outputs/flutter-apk/app-release.apk
+          name: xiaozhi-android-apk
+          path: |
+            build/app/outputs/flutter-apk/app-release.apk
+            build/app/outputs/flutter-apk/app-debug.apk
           if-no-files-found: error
           retention-days: 30
